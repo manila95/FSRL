@@ -107,6 +107,7 @@ class OffpolicyAgent(BaseAgent):
 
     def learn(
         self,
+        args,
         train_envs: Union[gym.Env, BaseVectorEnv],
         test_envs: Union[gym.Env, BaseVectorEnv] = None,
         epoch: int = 300,
@@ -162,14 +163,16 @@ class OffpolicyAgent(BaseAgent):
         else:
             buffer = VectorReplayBuffer(buffer_size, len(train_envs))
         train_collector = FastCollector(
+            args,
             self.policy,
             train_envs,
             buffer,
             exploration_noise=True,
+            risk_model=self.risk_model,
         )
 
         test_collector = FastCollector(
-            self.policy, test_envs
+            args, self.policy, test_envs
         ) if test_envs is not None else None
 
         def stop_fn(reward, cost):

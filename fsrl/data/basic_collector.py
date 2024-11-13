@@ -221,7 +221,7 @@ class BasicCollector:
                 cost=[cost],
                 info=[info]
             )
-
+            print(np.array(self.data.obs_next).shape)
             termination_count += terminated
             truncation_count += truncated
 

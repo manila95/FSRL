@@ -15,6 +15,10 @@ from tianshou.data import (
 from tianshou.env import BaseVectorEnv, DummyVectorEnv
 
 from fsrl.policy import BasePolicy
+from src.models.risk_models import *
+from src.datasets.risk_datasets import *
+from src.utils import * 
+import os
 
 
 class FastCollector(object):
@@ -46,11 +50,13 @@ class FastCollector(object):
 
     def __init__(
         self,
+        args,
         policy: BasePolicy,
         env: Union[gym.Env, BaseVectorEnv],
         buffer: Optional[ReplayBuffer] = None,
         preprocess_fn: Optional[Callable[..., Batch]] = None,
         exploration_noise: bool = False,
+        risk_model: Optional[BayesRiskEst] = None,
     ) -> None:
         super().__init__()
         if isinstance(env, gym.Env) and not hasattr(env, "__len__"):
@@ -58,14 +64,54 @@ class FastCollector(object):
             self.env = DummyVectorEnv([lambda: env])
         else:
             self.env = env
+        
+        self.args = args
         self.env_num = len(self.env)
         self.exploration_noise = exploration_noise
         self._assign_buffer(buffer)
         self.policy = policy
         self.preprocess_fn = preprocess_fn
         self._action_space = self.env.action_space
+        self.obs_space = self.env.observation_space
+
         # avoid creating attribute outside __init__
         self.reset(False)
+
+        # Keep count of the number of steps and episodes collected
+        self.global_step = 0
+        # initializing the risk loss 
+        self.risk_loss = None
+        self.device = torch.device(args.device)
+
+        # Setup the risk stuff
+        if args.use_risk and risk_model is not None:
+            self.risk_model = risk_model
+            if os.path.exists(args.risk_model_path):
+                self.risk_model.load_state_dict(torch.load(args.risk_model_path, map_location=torch.device(args.device)))
+
+            self.risk_model.to(torch.device(args.device))
+            
+            # if you want to train the risk model
+            if args.fine_tune_risk:
+                self.initialize_risk_utils()
+                # setup the optimizer
+                self.opt_risk = torch.optim.Adam(self.risk_model.parameters(), lr=args.risk_lr, eps=1e-10)
+                # risk criterion 
+                self.risk_criterion = torch.nn.NLLLoss()
+                # initalizing risk loss 
+            
+            self.risk_model.eval()
+
+
+    def initialize_risk_utils(self):
+        # Initializing the risk replay buffer
+        self.risk_rb = Batch(
+            next_obs = None,
+            risks = None, 
+            risk_quant= None,
+        )
+        self.risk_bins = np.array([i*self.args.quantile_size for i in range(self.args.quantile_num+1)])
+        
 
     def _assign_buffer(self, buffer: Optional[ReplayBuffer]) -> None:
         """Check if the buffer matches the constraint."""
@@ -115,6 +161,13 @@ class FastCollector(object):
             info={},
             policy={}
         )
+        self.risk_data = Batch(
+            obs_next=None,
+            cost=None,
+        )
+
+
+
         self.reset_env(gym_reset_kwargs)
         if reset_buffer:
             self.reset_buffer()
@@ -188,6 +241,52 @@ class FastCollector(object):
                 obs_reset = self.preprocess_fn(obs=obs_reset,
                                                env_id=global_ids).get("obs", obs_reset)
         self.data.obs_next[local_ids] = obs_reset
+        
+        if self.args.use_risk and self.args.fine_tune_risk:
+            self.add_risk_data()
+            self.risk_data = Batch(
+                obs_next=None,
+                cost=None,
+            )
+
+    def reset_risk_rb(self):
+        # resize the replay buffer if its too large 
+        if self.args.use_risk and self.args.fine_tune_risk:
+            if self.risk_rb.next_obs is not None and self.risk_rb.next_obs.shape[0] > self.args.risk_buffer_size:
+                self.risk_rb.next_obs = self.risk_rb.next_obs[-self.args.risk_buffer_size:]
+                self.risk_rb.risks = self.risk_rb.risks[-self.args.risk_buffer_size:]
+                self.risk_rb.risk_quant = self.risk_rb.risk_quant[-self.args.risk_buffer_size:]
+    
+    def add_risk_data(self):
+        # resize replay buffer if needed
+        self.reset_risk_rb()
+        costs = torch.Tensor(self.risk_data.cost)
+        f_risks = torch.empty_like(costs)
+        for i in range(self.env_num):
+            f_risks[:, i] = compute_fear(costs[:, i])
+
+        f_risks = f_risks.view(-1, 1)
+        f_risks_quant = torch.Tensor(np.apply_along_axis(lambda x: np.histogram(x, bins=self.risk_bins)[0], 1, np.expand_dims(f_risks.cpu().numpy(), 1)))
+        f_next_obs = torch.Tensor(self.risk_data.obs_next).reshape(-1, self.obs_space[0].shape[0])
+        self.risk_rb.update(
+            next_obs=f_next_obs if self.risk_rb.next_obs is None else torch.cat([self.risk_rb.next_obs, f_next_obs], axis=0),
+            risks=f_risks_quant if self.risk_rb.risks is None else torch.cat([self.risk_rb.risks, f_risks_quant], axis=0),
+            risk_quant=f_risks if self.risk_rb.risk_quant is None else torch.cat([self.risk_rb.risk_quant, f_risks], axis=0),
+        )
+
+    def update_risk_model(self):
+        if self.args.use_risk and self.args.fine_tune_risk:
+            if self.risk_rb.next_obs is not None \
+                                 and self.global_step % self.args.risk_update_freq == 0:
+                risk_inds = np.random.choice(range(self.risk_rb.next_obs.size(0)), self.args.risk_batch_size)
+                pred = self.risk_model(self.risk_rb.next_obs[risk_inds,:].to(self.device))
+                risk_loss = self.risk_criterion(pred, torch.argmax(self.risk_rb.risks[risk_inds,:].squeeze(), axis=1).to(self.device))
+                self.opt_risk.zero_grad()
+                risk_loss.backward()
+                self.opt_risk.step()
+                self.risk_loss = risk_loss
+                # logger.store(**{"risk/risk_loss": risk_loss.item()})
+            
 
     def collect(
         self,
@@ -284,6 +383,13 @@ class FastCollector(object):
             action_remap = self.policy.map_action(self.data.act)
             # step in env
             result = self.env.step(action_remap, ready_env_ids)
+            
+            # update number of steps taken in the environment
+            self.global_step += len(ready_env_ids)
+
+            # Update the risk model if its there 
+            self.update_risk_model()
+
             if len(result) == 5:
                 obs_next, rew, terminated, truncated, info = result
                 done = np.logical_or(terminated, truncated)
@@ -310,6 +416,7 @@ class FastCollector(object):
                 done=done,
                 info=info
             )
+
             if self.preprocess_fn:
                 self.data.update(
                     self.preprocess_fn(
@@ -325,7 +432,10 @@ class FastCollector(object):
             cost = self.data.info.get("cost", np.zeros(rew.shape))
             total_cost += np.sum(cost)
             self.data.update(cost=cost)
-
+            self.risk_data.update(
+                obs_next=np.array([obs_next]) if self.risk_data.obs_next is None else np.concatenate([self.risk_data.obs_next, np.array([obs_next])], axis=0),
+                cost=np.array([cost]) if self.risk_data.cost is None else np.concatenate([self.risk_data.cost, np.array([cost])], axis=0),
+            )
             if render:
                 self.env.render()
 
@@ -405,4 +515,5 @@ class FastCollector(object):
             "cost": total_cost / episode_count,
             "truncated": truncation_count / done_count,
             "terminated": termination_count / done_count,
+            "risk_loss": None if self.risk_loss is None else self.risk_loss.item()
         }

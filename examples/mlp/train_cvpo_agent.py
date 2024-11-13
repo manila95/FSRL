@@ -88,6 +88,7 @@ def train(args: TrainCfg):
     demo_env = gym.make(args.task)
 
     agent = CVPOAgent(
+        args=args,
         env=demo_env,
         logger=logger,
         cost_limit=args.cost_limit,
@@ -123,10 +124,11 @@ def train(args: TrainCfg):
     training_num = min(args.training_num, args.episode_per_collect)
     worker = eval(args.worker)
     train_envs = worker([lambda: gym.make(args.task) for _ in range(training_num)])
-    test_envs = worker([lambda: gym.make(args.task) for _ in range(args.testing_num)])
+    test_envs = None #worker([lambda: gym.make(args.task) for _ in range(args.testing_num)])
 
     # start training
     agent.learn(
+        args=args,
         train_envs=train_envs,
         test_envs=test_envs,
         epoch=args.epoch,

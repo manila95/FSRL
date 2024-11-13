@@ -79,10 +79,10 @@ class DoubleCritic(nn.Module):
                 device=self.device,  # type: ignore
                 dtype=torch.float32,
             ).flatten(1)
-            obs = torch.cat([obs, act], dim=1)
-        logits1, hidden = self.preprocess1(obs)
+            # obs = torch.cat([obs, act], dim=1)
+        logits1, hidden = self.preprocess1(obs, act)
         logits1 = self.last1(logits1)
-        logits2, hidden = self.preprocess2(obs)
+        logits2, hidden = self.preprocess2(obs, act)
         logits2 = self.last2(logits2)
         return [logits1, logits2]
 
@@ -138,7 +138,22 @@ class SingleCritic(Critic):
         info: Dict[str, Any] = {},
     ) -> torch.Tensor:
         """Mapping: (s, a) -> logits -> Q(s, a)."""
-        logits = super().forward(obs, act, info)
+        obs = torch.as_tensor(
+            obs,
+            device=self.device,
+            dtype=torch.float32,
+        )
+        obs = obs.flatten(1)
+        if act is not None:
+            act = torch.as_tensor(
+                act,
+                device=self.device,
+                dtype=torch.float32,
+            ).flatten(1)
+            # obs = torch.cat([obs, act], dim=1)
+        # if not self.apply_preprocess_net_to_obs_only:
+        obs, _ = self.preprocess(obs, act)
+        logits = self.last(obs)
         return [logits]
 
     def predict(

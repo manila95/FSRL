@@ -58,6 +58,16 @@ class TrainCfg:
     name: Optional[str] = None
     prefix: Optional[str] = "cvpo"
     suffix: Optional[str] = ""
+    # risk params
+    use_risk: bool = False
+    fine_tune_risk: bool = False
+    risk_model_path: str = "None"
+    quantile_num: int = 10
+    quantile_size: int = 4
+    risk_batch_size: int = 5000
+    risk_lr: float = 1e-6
+    risk_update_freq: int = 100
+    risk_buffer_size: int = 1e6
 
 
 # bullet-safety-gym task default configs

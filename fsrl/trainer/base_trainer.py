@@ -283,7 +283,7 @@ class BaseTrainer(ABC):
         """Perform one training step."""
         assert self.episode_per_test is not None
         stats_train = self.train_collector.collect(self.episode_per_collect)
-
+        
         self.env_step += int(stats_train["n/st"])
         self.cum_cost += stats_train["total_cost"]
         self.cum_episode += int(stats_train["n/ep"])
@@ -294,6 +294,7 @@ class BaseTrainer(ABC):
                 "train/reward": stats_train["rew"],
                 "train/cost": stats_train["cost"],
                 "train/length": int(stats_train["len"]),
+                "train/risk_loss": 0 if stats_train["risk_loss"] is None else stats_train["risk_loss"],
             }
         )
         return stats_train
