@@ -67,10 +67,10 @@ class TrainCfg:
     risk_batch_size: int = 5000
     risk_lr: float = 1e-6
     risk_update_freq: int = 100
-    risk_buffer_size: int = 1e6
+    risk_buffer_size: int = 1000000
     risk_update_steps: int = 10
     risk_update_type: str = "stable"
-
+    risk_hidden_size: int = 64
 
 # bullet-safety-gym task default configs
 
