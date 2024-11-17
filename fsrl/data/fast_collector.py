@@ -111,6 +111,8 @@ class FastCollector(object):
             risk_quant= None,
         )
         self.risk_bins = np.array([i*self.args.quantile_size for i in range(self.args.quantile_num+1)])
+        # Set number of update steps to 1 in case of sync typpe update
+        self.args.risk_update_steps = 1 if self.args.risk_update_type == "sync" else self.args.risk_update_steps
         
 
     def _assign_buffer(self, buffer: Optional[ReplayBuffer]) -> None:
@@ -278,13 +280,18 @@ class FastCollector(object):
         if self.args.use_risk and self.args.fine_tune_risk:
             if self.risk_rb.next_obs is not None \
                                  and self.global_step % self.args.risk_update_freq == 0:
-                risk_inds = np.random.choice(range(self.risk_rb.next_obs.size(0)), self.args.risk_batch_size)
-                pred = self.risk_model(self.risk_rb.next_obs[risk_inds,:].to(self.device))
-                risk_loss = self.risk_criterion(pred, torch.argmax(self.risk_rb.risks[risk_inds,:].squeeze(), axis=1).to(self.device))
-                self.opt_risk.zero_grad()
-                risk_loss.backward()
-                self.opt_risk.step()
-                self.risk_loss = risk_loss
+                loss = None
+                with tqdm.tqdm(total=self.args.risk_update_steps, desc="Update Risk model") as pbar:
+                    for _ in range(self.args.risk_update_steps):
+                        risk_inds = np.random.choice(range(self.risk_rb.next_obs.size(0)), self.args.risk_batch_size)
+                        pred = self.risk_model(self.risk_rb.next_obs[risk_inds,:].to(self.device))
+                        risk_loss = self.risk_criterion(pred, torch.argmax(self.risk_rb.risks[risk_inds,:].squeeze(), axis=1).to(self.device))
+                        self.opt_risk.zero_grad()
+                        risk_loss.backward()
+                        self.opt_risk.step()
+                        loss = risk_loss if loss is None else loss + risk_loss
+                        pbar.update(1)
+                self.risk_loss = loss / self.args.risk_update_steps
                 # logger.store(**{"risk/risk_loss": risk_loss.item()})
             
 
