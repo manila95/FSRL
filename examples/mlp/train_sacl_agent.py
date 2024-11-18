@@ -87,6 +87,7 @@ def train(args: TrainCfg):
     demo_env = gym.make(args.task)
 
     agent = SACLagAgent(
+        args=args,
         env=demo_env,
         logger=logger,
         # general task params
@@ -125,6 +126,7 @@ def train(args: TrainCfg):
 
     # start training
     agent.learn(
+        args=args,
         train_envs=train_envs,
         test_envs=test_envs,
         epoch=args.epoch,

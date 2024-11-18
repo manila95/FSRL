@@ -27,7 +27,8 @@ class RiskActor(nn.Module):
         self.risk_fc = nn.Linear(risk_size, 12)
         self.device = device
         self.risk_model = risk_model
-        self.fc2 = nn.Linear(hidden_sizes[0]+12, hidden_sizes[1])
+        risk_layer = 0 if risk_model is None else 12
+        self.fc2 = nn.Linear(hidden_sizes[0]+risk_layer, hidden_sizes[1])
         self.relu = nn.ReLU()
         self.output_dim = hidden_sizes[-1]
         # self.out = nn.Linear(hidden_sizes[-1], action_shape[0])
@@ -60,8 +61,9 @@ class RiskCritic(nn.Module):
         self.stateaction_fc = nn.Linear(state_shape[0]+action_shape[0], hidden_sizes[0])
         self.risk_fc = nn.Linear(risk_size, 12)
         self.device = device
+        risk_layer = 0 if risk_model is None else 12
         self.risk_model = risk_model
-        self.fc2 = nn.Linear(hidden_sizes[0]+12, hidden_sizes[1])
+        self.fc2 = nn.Linear(hidden_sizes[0]+risk_layer, hidden_sizes[1])
         self.relu = nn.ReLU()
         self.output_dim = hidden_sizes[-1]
 

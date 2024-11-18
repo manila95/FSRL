@@ -2,6 +2,7 @@ from argparse import Action
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 import gymnasium as gym
+import bullet_safety_gym
 import numpy as np
 import torch
 from tianshou.data import Batch, ReplayBuffer, to_torch_as

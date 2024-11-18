@@ -15,6 +15,73 @@ from fsrl.utils.net.common import ActorCritic
 from fsrl.utils.net.continuous import DoubleCritic
 
 
+from src.models.risk_models import *
+from src.datasets.risk_datasets import *
+from src.utils import * 
+import os
+
+class RiskActor(nn.Module):
+    def __init__(self, state_shape, action_shape, hidden_sizes, device, risk_model=None, risk_size=10):
+        super().__init__()
+        self.state_fc = nn.Linear(state_shape[0], hidden_sizes[0])
+        self.risk_fc = nn.Linear(risk_size, 12)
+        self.device = device
+        self.risk_model = risk_model
+        risk_layer = 0 if risk_model is None else 12
+        self.fc2 = nn.Linear(hidden_sizes[0]+risk_layer, hidden_sizes[1])
+        self.relu = nn.ReLU()
+        self.output_dim = hidden_sizes[-1]
+        # self.out = nn.Linear(hidden_sizes[-1], action_shape[0])
+
+    def forward(self, x, state=None):
+        risk = None
+        x = torch.as_tensor(
+            x,
+            device=self.device,  # type: ignore
+            dtype=torch.float32,
+        )
+        if self.risk_model is not None:
+            with torch.no_grad():
+                risk = self.risk_model(x)
+        x = self.state_fc(x)
+        if risk is not None:
+            risk = self.risk_fc(risk)
+            x = torch.cat([x, risk], dim=-1)
+        x = self.relu(x)
+        x = self.fc2(x)
+        x = self.relu(x)
+        return x, state
+
+    def get_output_dim(self) -> int:
+        return self.output_dim
+
+class RiskCritic(nn.Module):
+    def __init__(self, state_shape, action_shape, hidden_sizes, device, risk_model=None, risk_size=10):
+        super().__init__()
+        self.stateaction_fc = nn.Linear(state_shape[0]+action_shape[0], hidden_sizes[0])
+        self.risk_fc = nn.Linear(risk_size, 12)
+        self.device = device
+        risk_layer = 0 if risk_model is None else 12
+        self.risk_model = risk_model
+        self.fc2 = nn.Linear(hidden_sizes[0]+risk_layer, hidden_sizes[1])
+        self.relu = nn.ReLU()
+        self.output_dim = hidden_sizes[-1]
+
+    def forward(self, x, a, state=None):
+        risk = None
+        if self.risk_model is not None:
+            with torch.no_grad():
+                risk = self.risk_model(x)
+        x = self.stateaction_fc(torch.cat([x, a], dim=-1))
+        if risk is not None:
+            risk = self.risk_fc(risk)
+            x = torch.cat([x, risk], dim=-1)
+        x = self.relu(x)
+        return self.relu(self.fc2(x)), state
+
+    def get_output_dim(self) -> int:
+        return self.output_dim
+
 class SACLagAgent(OffpolicyAgent):
     """Soft Actor-Critic (SAC) with PID Lagrangian agent.
 
@@ -74,6 +141,7 @@ class SACLagAgent(OffpolicyAgent):
 
     def __init__(
         self,
+        args,
         env: gym.Env,
         logger: BaseLogger = BaseLogger(),
         cost_limit: float = 10,
@@ -123,7 +191,11 @@ class SACLagAgent(OffpolicyAgent):
         action_shape = env.action_space.shape or env.action_space.n
         max_action = env.action_space.high[0]
 
-        net = Net(state_shape, hidden_sizes=hidden_sizes, device=device)
+        # Risk model 
+        # if args.use_risk:
+        self.risk_model = BayesRiskEst(obs_size=state_shape[0], batch_norm=True, out_size=args.quantile_num) if args.use_risk else None
+
+        net = RiskActor(state_shape, action_shape, hidden_sizes, device, risk_model=self.risk_model, risk_size=args.quantile_num)
         actor = ActorProb(
             net,
             action_shape,
@@ -135,20 +207,23 @@ class SACLagAgent(OffpolicyAgent):
         actor_optim = torch.optim.Adam(actor.parameters(), lr=actor_lr)
 
         critics = []
+
         for _ in range(1 + cost_dim):
-            net1 = Net(
+            net1 = RiskCritic(
                 state_shape,
                 action_shape,
                 hidden_sizes=hidden_sizes,
-                concat=True,
-                device=device
+                device=device,
+                risk_model=self.risk_model,
+                risk_size=args.quantile_num
             )
-            net2 = Net(
+            net2 = RiskCritic(
                 state_shape,
                 action_shape,
                 hidden_sizes=hidden_sizes,
-                concat=True,
-                device=device
+                device=device,
+                risk_model=self.risk_model,
+                risk_size=args.quantile_num
             )
             critics.append(DoubleCritic(net1, net2, device=device).to(device))
 
