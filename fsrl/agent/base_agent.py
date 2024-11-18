@@ -303,7 +303,7 @@ class OnpolicyAgent(BaseAgent):
         trainer = OnpolicyTrainer(
             policy=self.policy,
             train_collector=train_collector,
-            test_collector=test_collector,
+            test_collector=None,
             max_epoch=epoch,
             batch_size=batch_size,
             cost_limit=self.cost_limit,

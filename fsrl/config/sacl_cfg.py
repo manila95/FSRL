@@ -94,7 +94,7 @@ class Bullet10MCfg(TrainCfg):
 class MujocoBaseCfg(TrainCfg):
     task: str = "SafetyPointCircle1Gymnasium-v0"
     epoch: int = 250
-    cost_limit: float = 25
+    # cost_limit: float = 25
     gamma: float = 0.99
     n_step: int = 3
     # collecting params
