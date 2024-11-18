@@ -213,8 +213,8 @@ class BaseTrainer(ABC):
                 self.logger.write_without_reset(self.env_step)
 
         # test
-        if self.test_collector is not None:
-            self.test_step()
+        # if self.test_collector is not None:
+        #     self.test_step()
 
         # train and test collector info
         update_info = self.gather_update_info()
