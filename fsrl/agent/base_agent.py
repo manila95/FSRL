@@ -161,7 +161,7 @@ class OffpolicyAgent(BaseAgent):
         if isinstance(train_envs, gym.Env):
             buffer = ReplayBuffer(buffer_size)
         else:
-            buffer = VectorReplayBuffer(buffer_size, len(train_envs))
+            buffer = VectorReplayBuffer(buffer_size, train_envs.num_envs)
         train_collector = FastCollector(
             args,
             self.policy,

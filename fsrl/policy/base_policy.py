@@ -500,7 +500,9 @@ class BasePolicy(ABC, nn.Module):
             #     truncation_mask = ~buffer.truncated[terminal].reshape(-1, 1)
             #     value_mask = np.logical_and(value_mask, truncation_mask)
             target_q = to_numpy(target_q_list[i].reshape(bsz, -1)) * value_mask
-
+            # print(self._gamma, end_flag.shape, indices[0].shape, metrics[i].shape)
+            indices = np.squeeze(indices)
+            end_flag = np.squeeze(end_flag)
             target_q = nstep_return(
                 metrics[i], end_flag, target_q, indices, self._gamma, n_step
             )

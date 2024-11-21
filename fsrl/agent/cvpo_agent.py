@@ -196,13 +196,12 @@ class CVPOAgent(OffpolicyAgent):
         torch.set_num_threads(thread)
 
         # model
-        state_shape = env.observation_space.shape or env.observation_space.n
+        state_shape = (259,)
         action_shape = env.action_space.shape or env.action_space.n
         max_action = env.action_space.high[0]
 
         # Risk model 
-        if args.use_risk:
-            self.risk_model = BayesRiskEst(obs_size=state_shape[0], batch_norm=True, out_size=args.quantile_num) if args.use_risk else None
+        self.risk_model = BayesRiskEst(obs_size=259, batch_norm=True, out_size=args.quantile_num) if args.use_risk else None
 
         assert hasattr(
             env.spec, "max_episode_steps"

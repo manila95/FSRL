@@ -26,6 +26,8 @@ from fsrl.config.cvpo_cfg import (
 )
 from fsrl.utils import BaseLogger, TensorboardLogger, WandbLogger
 from fsrl.utils.exp_util import auto_name
+from omnisafe.envs.core import CMDP, make, support_envs
+
 
 TASK_TO_CFG = {
     # bullet safety gym tasks
@@ -123,7 +125,8 @@ def train(args: TrainCfg):
 
     training_num = min(args.training_num, args.episode_per_collect)
     worker = eval(args.worker)
-    train_envs = worker([lambda: gym.make(args.task) for _ in range(training_num)])
+    env_cfgs= {"meta_drive_config": {"horizon": 1500, "random_traffic": False, "crash_vehicle_penalty": 1., "crash_object_penalty": 0.5, "out_of_road_penalty": 1.0}}
+    train_envs =  make("SafeMetaDrive", num_envs=10, device="cpu", **env_cfgs)
     test_envs = None #worker([lambda: gym.make(args.task) for _ in range(args.testing_num)])
 
     # start training

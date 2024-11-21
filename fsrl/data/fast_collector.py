@@ -66,7 +66,7 @@ class FastCollector(object):
             self.env = env
         
         self.args = args
-        self.env_num = len(self.env)
+        self.env_num = self.env.num_envs
         self.exploration_noise = exploration_noise
         self._assign_buffer(buffer)
         self.policy = policy
@@ -88,7 +88,7 @@ class FastCollector(object):
             self.risk_model = risk_model
             if os.path.exists(args.risk_model_path):
                 self.risk_model.load_state_dict(torch.load(args.risk_model_path, map_location=torch.device(args.device)))
-
+            self.risk_model.eval()
             self.risk_model.to(torch.device(args.device))
             
             # if you want to train the risk model
@@ -198,13 +198,13 @@ class FastCollector(object):
                 )
                 obs = processed_data.get("obs", obs)
                 info = processed_data.get("info", info)
-            self.data.info = info
+            self.data.info = [info]
         else:
             obs = rval
             if self.preprocess_fn:
                 obs = self.preprocess_fn(obs=obs,
                                          env_id=np.arange(self.env_num)).get("obs", obs)
-        self.data.obs = obs
+        self.data.obs = obs.reshape(1, -1).numpy()
 
     def _reset_state(self, id: Union[int, List[int]]) -> None:
         """Reset the hidden state: self.data.state[id]."""
@@ -224,7 +224,7 @@ class FastCollector(object):
         gym_reset_kwargs: Optional[Dict[str, Any]] = None,
     ) -> None:
         gym_reset_kwargs = gym_reset_kwargs if gym_reset_kwargs else {}
-        rval = self.env.reset(global_ids, **gym_reset_kwargs)
+        rval = self.env.reset()
         returns_info = isinstance(rval, (tuple, list)) and len(rval) == 2 and (
             isinstance(rval[1], dict) or isinstance(rval[1][0], dict)
         )
@@ -236,13 +236,13 @@ class FastCollector(object):
                 )
                 obs_reset = processed_data.get("obs", obs_reset)
                 info = processed_data.get("info", info)
-            self.data.info[local_ids] = info
+            self.data.info[local_ids] = [info]
         else:
             obs_reset = rval
             if self.preprocess_fn:
                 obs_reset = self.preprocess_fn(obs=obs_reset,
                                                env_id=global_ids).get("obs", obs_reset)
-        self.data.obs_next[local_ids] = obs_reset
+        self.data.obs_next[local_ids] = obs_reset.reshape(1, -1).numpy()
         
         if self.args.use_risk and self.args.fine_tune_risk:
             self.add_risk_data()
@@ -262,14 +262,14 @@ class FastCollector(object):
     def add_risk_data(self):
         # resize replay buffer if needed
         self.reset_risk_rb()
-        costs = torch.Tensor(self.risk_data.cost)
+        costs = torch.Tensor(self.risk_data.cost).reshape(-1, 1)
         f_risks = torch.empty_like(costs)
-        for i in range(self.env_num):
-            f_risks[:, i] = compute_fear(costs[:, i])
+        # for i in range(self.env_num):
+        f_risks = compute_fear(costs)
 
         f_risks = f_risks.view(-1, 1)
         f_risks_quant = torch.Tensor(np.apply_along_axis(lambda x: np.histogram(x, bins=self.risk_bins)[0], 1, np.expand_dims(f_risks.cpu().numpy(), 1)))
-        f_next_obs = torch.Tensor(self.risk_data.obs_next).reshape(-1, self.obs_space[0].shape[0])
+        f_next_obs = torch.Tensor(self.risk_data.obs_next).reshape(-1, 259)
         self.risk_rb.update(
             next_obs=f_next_obs if self.risk_rb.next_obs is None else torch.cat([self.risk_rb.next_obs, f_next_obs], axis=0),
             risks=f_risks_quant if self.risk_rb.risks is None else torch.cat([self.risk_rb.risks, f_risks_quant], axis=0),
@@ -281,6 +281,7 @@ class FastCollector(object):
             if self.risk_rb.next_obs is not None \
                                  and self.global_step % self.args.risk_update_freq == 0:
                 loss = None
+                self.risk_model.train()
                 with tqdm.tqdm(total=self.args.risk_update_steps, desc="Update Risk model") as pbar:
                     for _ in range(self.args.risk_update_steps):
                         risk_inds = np.random.choice(range(self.risk_rb.next_obs.size(0)), self.args.risk_batch_size)
@@ -292,6 +293,7 @@ class FastCollector(object):
                         loss = risk_loss if loss is None else loss + risk_loss
                         pbar.update(1)
                 self.risk_loss = loss / self.args.risk_update_steps
+                self.risk_model.eval()
                 # logger.store(**{"risk/risk_loss": risk_loss.item()})
             
 
@@ -336,16 +338,16 @@ class FastCollector(object):
             * ``truncated`` mean of episodic truncation.
             * ``terminated`` mean of episodic termination.
         """
-        if n_episode is not None:
-            assert n_episode > 0
-            ready_env_ids = np.arange(min(self.env_num, n_episode))
-            self.data = self.data[:min(self.env_num, n_episode)]
-        else:
-            raise TypeError("Please specify n_episode"
-                            "in FastCollector.collect().")
+        # if n_episode is not None:
+        #     assert n_episode > 0
+        #     ready_env_ids = np.arange(min(self.env_num, n_episode))
+        #     self.data = self.data[:min(self.env_num, n_episode)]
+        # else:
+        #     raise TypeError("Please specify n_episode"
+        #                     "in FastCollector.collect().")
 
         start_time = time.time()
-
+        ready_env_ids = np.arange(min(self.env_num, n_episode))
         step_count = 0
         total_cost = 0
         termination_count = 0
@@ -356,7 +358,6 @@ class FastCollector(object):
         episode_start_indices = []
 
         while True:
-            assert len(self.data) == len(ready_env_ids)
             # restore the state: if the last state is None, it won't store
             last_state = self.data.policy.pop("hidden_state", None)
 
@@ -372,6 +373,7 @@ class FastCollector(object):
                 if no_grad:
                     with torch.no_grad():  # faster than retain_grad version
                         # self.data.obs will be used by agent to get result
+                        self.risk_model.eval()
                         result = self.policy(self.data, last_state)
                 else:
                     result = self.policy(self.data, last_state)
@@ -387,9 +389,9 @@ class FastCollector(object):
                 self.data.update(policy=policy, act=act)
 
             # get bounded and remapped actions first (not saved into buffer)
-            action_remap = self.policy.map_action(self.data.act)
+            # action_remap = self.policy.map_action(torch.Tensor(self.data.act))
             # step in env
-            result = self.env.step(action_remap, ready_env_ids)
+            result = self.env.step(torch.Tensor(self.data.act)[0])
             
             # update number of steps taken in the environment
             self.global_step += len(ready_env_ids)
@@ -397,31 +399,38 @@ class FastCollector(object):
             # Update the risk model if its there 
             self.update_risk_model()
 
-            if len(result) == 5:
-                obs_next, rew, terminated, truncated, info = result
-                done = np.logical_or(terminated, truncated)
-            elif len(result) == 4:
-                obs_next, rew, done, info = result
-                if isinstance(info, dict):
-                    truncated = info["TimeLimit.truncated"]
-                else:
-                    truncated = np.array(
-                        [
-                            info_item.get("TimeLimit.truncated", False)
-                            for info_item in info
-                        ]
-                    )
-                terminated = np.logical_and(done, ~truncated)
-            else:
-                raise ValueError()
+            obs_next, rew, cost, terminated, truncated, info = result
+            if cost > 0:
+                cost = 1.0 
+            done = np.logical_or(terminated, truncated)
 
+            # if len(result) == 5:
+            #     obs_next, rew, terminated, truncated, info = result
+            #     done = np.logical_or(terminated, truncated)
+            # elif len(result) == 4:
+            #     obs_next, rew, done, info = result
+            #     if isinstance(info, dict):
+            #         truncated = info["TimeLimit.truncated"]
+            #     else:
+            #         truncated = np.array(
+            #             [
+            #                 info_item.get("TimeLimit.truncated", False)
+            #                 for info_item in info
+            #             ]
+            #         )
+            #     terminated = np.logical_and(done, ~truncated)
+            # else:
+            #     raise ValueError()
+            obs_next, rew, cost, terminated, truncated, done = (x.reshape(1, -1).numpy() for x in (obs_next, torch.Tensor([rew]), torch.Tensor([cost]), terminated, truncated, torch.Tensor([done])))
+            # print(done)
             self.data.update(
                 obs_next=obs_next,
                 rew=rew,
                 terminated=terminated,
                 truncated=truncated,
-                done=done,
-                info=info
+                done=done[0],
+                info=[info],
+                policy=policy,
             )
 
             if self.preprocess_fn:
@@ -435,8 +444,7 @@ class FastCollector(object):
                         env_id=ready_env_ids,
                     )
                 )
-
-            cost = self.data.info.get("cost", np.zeros(rew.shape))
+            # cost = self.data.info.get("cost", np.zeros(rew.shape))
             total_cost += np.sum(cost)
             self.data.update(cost=cost)
             self.risk_data.update(
@@ -446,9 +454,11 @@ class FastCollector(object):
             if render:
                 self.env.render()
 
+            # print(self.data)
             # add data into the buffer
+            # print(self.data.done.shape)
             ptr, ep_rew, ep_len, ep_idx = self.buffer.add(
-                self.data, buffer_ids=ready_env_ids
+                self.data, np.arange(1)
             )
 
             # collect statistics
@@ -471,13 +481,13 @@ class FastCollector(object):
 
                 # remove surplus env id from ready_env_ids to avoid bias in selecting
                 # environments
-                if n_episode:
-                    surplus_env_num = len(ready_env_ids) - (n_episode - episode_count)
-                    if surplus_env_num > 0:
-                        mask = np.ones_like(ready_env_ids, dtype=bool)
-                        mask[env_ind_local[:surplus_env_num]] = False
-                        ready_env_ids = ready_env_ids[mask]
-                        self.data = self.data[mask]
+                # if n_episode:
+                #     surplus_env_num = len(ready_env_ids) - (n_episode - episode_count)
+                #     if surplus_env_num > 0:
+                #         mask = np.ones_like(ready_env_ids, dtype=bool)
+                #         mask[env_ind_local[:surplus_env_num]] = False
+                #         ready_env_ids = ready_env_ids[mask]
+                #         self.data = self.data[mask]
 
             self.data.obs = self.data.obs_next
 
